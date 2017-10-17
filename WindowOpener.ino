@@ -29,6 +29,8 @@ LiquidCrystal_I2C  lcd(I2C_ADDR, En_pin, Rw_pin, Rs_pin, D4_pin, D5_pin, D6_pin,
 #define STEPPER_PIN_4 11
 #define STEPPER_SPEED 100
 
+#define STEPPER_ANGLE 4
+
 Stepper stepper = Stepper(STEPPER_STEPS, STEPPER_PIN_1, STEPPER_PIN_2, STEPPER_PIN_3, STEPPER_PIN_4);
 
 // Input Definitions
@@ -61,8 +63,8 @@ uint8_t state = STATE_GET_WINDOW_STATE;
 tmElements_t openTime;
 tmElements_t closeTime;
 
-bool openWindowEnable = false;
-bool closeWindowEnable = false;
+char openWindowEnable = false;
+char closeWindowEnable = false;
 
 tmElements_t editTime;
 uint8_t editState = 1;
@@ -102,8 +104,13 @@ void onBMainRelease(Button &b) {
 	case STATE_TIME_EDIT:
 		RTC.write(editTime);
 		state = STATE_MAIN;
+		break;
 	case STATE_MAIN:
 		state = STATE_ENABLE_EDIT;
+		break;
+	case STATE_ENABLE_EDIT:
+		state = STATE_MAIN;
+		break;
 	default:
 		break;
 	}
@@ -151,6 +158,11 @@ void onBControl1Release(Button &b) {
 	case STATE_GET_WINDOW_STATE:
 		windowState = WINDOW_OPEN;
 		state = STATE_MAIN;
+		break;
+	case STATE_ENABLE_EDIT:
+		openWindowEnable = !openWindowEnable;
+		writeEEPROM();
+		printMenu(state, true);
 		break;
 	default:
 		break;
@@ -208,6 +220,11 @@ void onBControl2Release(Button &b) {
 	case STATE_GET_WINDOW_STATE:
 		windowState = WINDOW_CLOSED;
 		state = STATE_MAIN;
+		break;
+	case STATE_ENABLE_EDIT:
+		closeWindowEnable = !closeWindowEnable;
+		writeEEPROM();
+		printMenu(state, true);
 		break;
 	default:
 		break;
@@ -313,22 +330,34 @@ void printMenu(uint8_t _state, bool forceRefresh = false) {
 		break;
 	case STATE_MANUAL_WINDOW_OPEN:
 		lcd.print("Ikkuna avataan");
-		openWindow();
+		openWindow(false);
 		state = STATE_MAIN;
 		delay(100);
 		break;
 	case STATE_MANUAL_WINDOW_CLOSE:
 		lcd.print("Ikkuna suljetaan");
-		closeWindow();
+		closeWindow(false);
 		state = STATE_MAIN;
 		delay(100);
 		break;
 	case STATE_ENABLE_EDIT:
 		lcd.print("Tila");
 		lcd.setCursor(0, 1);
-		lcd.print("Avaus:       ");
+		lcd.print("Avaus:        ");
+		if (openWindowEnable) {
+			lcd.print("Kylla");
+		}
+		else {
+			lcd.print("   Ei");
+		}
 		lcd.setCursor(0, 2);
-		lcd.print("Sulkeminen:  ");
+		lcd.print("Sulkeminen:   ");
+		if (closeWindowEnable) {
+			lcd.print("Kylla");
+		}
+		else {
+			lcd.print("   Ei");
+		}
 		break;
 	}
 }
@@ -343,7 +372,11 @@ void getWindowState() {
 	lcd.print("      Auki    Kiinni");
 }
 
-void openWindow() {
+void openWindow(char alarm) {
+	// Don't open the window with alarm if the enable is not set
+	if (!openWindowEnable && alarm) {
+		return;
+	}
 	if (windowState == WINDOW_UNKNOWN) {
 		return getWindowState();
 	}
@@ -354,11 +387,15 @@ void openWindow() {
 	windowState = WINDOW_UNKNOWN;
 	// Drive stepper
 	stepper.setSpeed(STEPPER_SPEED);
-	stepper.step(STEPPER_STEPS * 3);
+	stepper.step(STEPPER_STEPS * STEPPER_ANGLE);
 	windowState = WINDOW_OPEN;
 }
 
-void closeWindow() {
+void closeWindow(char alarm) {
+	// Don't open the window with alarm if the enable is not set
+	if (!closeWindowEnable && alarm) {
+		return;
+	}
 	if (windowState == WINDOW_UNKNOWN) {
 		return getWindowState();
 	}
@@ -368,9 +405,8 @@ void closeWindow() {
 
 	windowState = WINDOW_UNKNOWN;
 	// Drive stepper
-	// Drive stepper
 	stepper.setSpeed(STEPPER_SPEED);
-	stepper.step(-(STEPPER_STEPS * 3));
+	stepper.step(-(STEPPER_STEPS * STEPPER_ANGLE));
 	windowState = WINDOW_CLOSED;
 }
 
@@ -381,7 +417,7 @@ void readEEPROM() {
 	EEPROM.get(addr, closeTime);
 	addr += sizeof(tmElements_t);
 	EEPROM.get(addr, openWindowEnable);
-	addr += sizeof(bool);
+	addr += sizeof(char);
 	EEPROM.get(addr, closeWindowEnable);
 
 	// Adjust for invalid values in the times
@@ -397,6 +433,12 @@ void readEEPROM() {
 	if (closeTime.Minute >= 60) {
 		closeTime.Minute = 0;
 	}
+	if (openWindowEnable > 1) {
+		openWindowEnable = true;
+	}
+	if (closeWindowEnable > 1) {
+		closeWindowEnable = true;
+	}
 }
 
 void writeEEPROM() {
@@ -406,7 +448,7 @@ void writeEEPROM() {
 	EEPROM.put(addr, closeTime);
 	addr += sizeof(tmElements_t);
 	EEPROM.put(addr, openWindowEnable);
-	addr += sizeof(bool);
+	addr += sizeof(char);
 	EEPROM.put(addr, closeWindowEnable);
 }
 
@@ -429,18 +471,23 @@ void pwrDown() {
 	// turn off the LCD
 	lcd.noDisplay();
 	lcd.setBacklight(LOW);
+	Serial.println("Power down");
 
+	// Delay required for all actions to finish before sleep
+	delay(100);
 	sleep_mode();
 	sleep_disable();
 	detachInterrupt(0);
 	detachInterrupt(1);
+	Serial.println("Power up");
+	delay(100);
 
 	if (RTC.alarm(1)) {
-		openWindow();
+		openWindow(true);
 		pwrDown();
 	}
 	else if (RTC.alarm(2)) {
-		closeWindow();
+		closeWindow(true);
 		pwrDown();
 	}
 	else {
